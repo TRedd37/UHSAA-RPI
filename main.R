@@ -8,9 +8,6 @@ setwd("~/Personal/Git/UHSAA-RPI/")
 
 source("functions.R")
 
-
-getTeamSchedule("Farmington", "https://www.laxnumbers.com/team_info.php?t=14162")
-
 team_info <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
   read_sheet(sheet = "Team Information")
 
@@ -19,6 +16,10 @@ full_schedule <- team_info %>%
   rename(team_name = "Team Name", url = "Schedule URL") %>%
   as.data.frame() %>%
   pmap_dfr(getTeamSchedule)
+
+scenarios <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
+  read_sheet(sheet = "Scenario Builder") %>%
+  createSenarios()
   
 
 test_schedule <- full_schedule %>%
@@ -32,22 +33,6 @@ test_schedule <- full_schedule %>%
                               Date == "2021-04-30"), 0, OwnScore))
 
 
-
-scenario <- data.frame(Date= as.Date(today()),
-                       Opponent = c("Skyline", "Alta"),
-                       Team = c("Alta", "Skyline"),
-                       Home = FALSE,
-                       OwnScore = c(1, 0),
-                       OpponentScore = c(0, 1))
-scenario <- data.frame(Date= as.Date(today()),
-                       Opponent = c("Pleasant Grove", "Herriman", 
-                                    "Orem", "Timpview", 
-                                    "Waterford", "Utah Military Academy-Hillfield"),
-                       Team = c("Herriman", "Pleasant Grove", "Timpview", "Orem",
-                                "Utah Military Academy-Hillfield", "Waterford"),
-                       Home = FALSE,
-                       OwnScore = c(0, 1, 1, 0, 0, 1),
-                       OpponentScore = c(1, 0, 0, 1, 1, 0))
 
 test_schedule <- full_schedule %>%
   filter(!is.na(OwnScore)) %>%
