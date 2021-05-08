@@ -65,3 +65,25 @@ calculateRPI <- function(team_name, schedule) {
                        RPI = as.numeric(0.45 * WP + 0.45 * OWP + 0.1 * OOWP))
   return(output)
 }
+
+createGames <- function(Team1, Team2, Winner){
+  if(!(Winner %in% c(Team1, Team2))){
+    stop("Winner must be Team1 or Team 2")
+  }
+  
+  games <- data.frame(Date= as.Date(today()),
+            Opponent = c(Team1, Team2),
+            Team = c(Team2, Team1),
+            Home = FALSE,
+            OwnScore = as.numeric(c(Team2 == Winner, Team1 == Winner)),
+            OpponentScore = as.numeric(c(Team1 == Winner, Team2 == Winner)))
+  return(games)
+}
+
+createSenarios <- function(scenarios){
+  all_games <- scenarios %>%
+    pmap_dfr(createGames)
+  return(all_games)
+}
+
+
