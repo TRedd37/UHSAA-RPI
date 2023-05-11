@@ -8,71 +8,77 @@ setwd("~/Personal/Git/UHSAA-RPI/")
 
 source("functions.R")
 
-team_info <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
-  read_sheet(sheet = "Team Information")
+completed_schedule <- getCompleteGames()
+teams <- getTeamList()
+updateRPISheet(completed_schedule, teams)
+runScenarioGenerator(completed_schedule, teams)
 
-full_schedule <- team_info %>%
-  select("Team Name", "Schedule URL") %>%
-  rename(team_name = "Team Name", url = "Schedule URL") %>%
-  as.data.frame() %>%
-  pmap_dfr(getTeamSchedule)
+unfinished_games <- full_schedule %>%
+  filter(is.na(OwnScore)) %>%
+  filter(Team %in% teams)
 
-finished_games <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
-  read_sheet(sheet = "Finished Games") %>%
-  filter(!is.na(Winner)) %>%
-  select(-c(Date, Lock)) %>%
-  createSenarios()
+unfinished_games %>%
+  filter(Home) %>%
+  select(Opponent, Team, Date) %>%
+  sheet_write("https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846",
+              sheet = "All Remaining")
 
-scenarios <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
-  read_sheet(sheet = "All Remaining") %>%
-  filter(!is.na(Winner)) %>%
-  select(-c(Date, Lock)) %>%
-  createSenarios()
-  
-# test_schedule <- full_schedule %>%
-#   mutate(Date = as.Date(Date)) %>%
-#   filter(Date < as.Date("2021-05-04")) %>%
-#   mutate(OwnScore = ifelse((Team == "Ridgeline" & 
-#                             Opponent =="Logan" & 
-#                             Date == "2021-04-30"), 50, OwnScore)) %>%
-#   mutate(OwnScore = ifelse((Opponent == "Ridgeline" & 
-#                             Team =="Logan" & 
-#                               Date == "2021-04-30"), 0, OwnScore))
 
-full_schedule <- full_schedule %>%
-  filter(!is.na(OwnScore))
 
-test_schedule <- full_schedule %>%
-  filter(!is.na(OwnScore)) %>%
-  rbind(scenarios)
 
-teams <- test_schedule %>%
-  pull(Team) %>%
-  unique()
+teams <- team_info %>%
+  filter(`LaxNums ID` != "") %>%
+  pull("Team Name")
 
 RPIs <- data.frame(team_name = teams) %>%
-  pmap_dfr(calculateRPI, schedule = full_schedule) %>%
-  mutate(Team = teams) %>%
-  arrange(desc(RPI)) %>%
-  mutate(RPI_Rank = row_number()) %>%
-  relocate(RPI_Rank, Team, RPI) 
+  pmap_dfr(calculateRPI, 
+           schedule = completed_schedule, 
+           team_info = team_info) %>%
+  mutate(Team = teams) 
 
 RPIs %>%
+  left_join(team_info %>% select("Team Name", "Classification"),
+            by = c("Team" = "Team Name")) %>% 
+  arrange(desc(Classification), desc(RPI)) %>%
+  group_by(Classification) %>%
+  mutate(RPI_Rank = row_number()) %>%
+  relocate(RPI_Rank, Team, RPI) %>%
   sheet_write("https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846",
               sheet = "RPI")
 
-calculateRPI("Alta", test_schedule)
-calculateWP("Bountiful", test_schedule)
-calculateIndividualOWP("Alta", "Timpview", full_schedule)
-team_name <- "Olympus"
 
-full_schedule %>%
-  filter(Team == team_name) %>%
-  rename(team_name = Team, opponent = Opponent) %>%
-  select(team_name, opponent) %>%
-  pmap_dfr(calculateOWP, schedule = test_schedule) %>%
-  summarize(OWP = mean(WP))
 
-full_schedule %>%
-  filter(is.na(OwnScore)) %>% 
-  nrow()
+finished_games <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
+  read_sheet(sheet = "Finished Games") %>%
+  rename("OwnScore" = "Own Score",
+         "OpponentScore" = "Opponent Score")
+
+finished_games_doubled <- finished_games %>%
+  mutate(TeamNew = Opponent,
+         Opponent = Team,
+         Team = TeamNew,
+         Temp = `OwnScore`,
+         `OwnScore` = `OpponentScore`,
+         `OpponentScore` = Temp,
+         Home = FALSE) %>%
+  select(-c(Temp, TeamNew)) %>%
+  bind_rows(finished_games)
+
+test_schedule <- completed_schedule %>%
+  bind_rows(finished_games_doubled)
+
+
+RPIs <- data.frame(team_name = teams) %>%
+  pmap_dfr(calculateRPI, schedule = test_schedule, 
+           team_info = team_info) %>%
+  mutate(Team = teams)
+
+RPIs %>%
+  left_join(team_info %>% select("Team Name", "Classification"),
+            by = c("Team" = "Team Name")) %>% 
+  arrange(desc(Classification), desc(RPI)) %>%
+  group_by(Classification) %>%
+  mutate(RPI_Rank = row_number()) %>%
+  relocate(RPI_Rank, Team, RPI) %>%
+  sheet_write("https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846",
+              sheet = "RPI_finished")
