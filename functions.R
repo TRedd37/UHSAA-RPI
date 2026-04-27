@@ -5,17 +5,14 @@ LAXNUMS_RATINGS_BASE <- "https://www.laxnumbers.com/ratings.php"
 BOYS_CLASSIFICATION_VIEWS <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
 
 getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
-                                    year = year(today())) {
+                                    year = NULL) {
+  if (is.null(year)) year <- lubridate::year(today())
   map2_dfr(names(view_ids), unname(view_ids), function(class_name, view_id) {
-    url <- str_glue("{LAXNUMS_RATINGS_BASE}?y={year}&v={view_id}")
-
-    team_links <- url %>%
-      read_html() %>%
-      html_nodes("td.sitestyle1 a")
-
+    url <- str_glue("https://www.laxnumbers.com/ratings/service?y={year}&v={view_id}")
+    teams <- jsonlite::fromJSON(url)
     data.frame(
-      "Team Name"     = team_links %>% html_text(trim = TRUE),
-      "LaxNums ID"    = team_links %>% html_attr("href") %>% str_replace(".*t=", ""),
+      "Team Name"      = teams$name,
+      "LaxNums ID"     = as.character(teams$team_nbr),
       "Classification" = class_name,
       check.names = FALSE,
       stringsAsFactors = FALSE
@@ -35,7 +32,8 @@ getOpponentIDs <- function(url){
     select(team_id)
 }
 
-getTeamSchedule <- function(team_id, year = year(today())) {
+getTeamSchedule <- function(team_id, year = NULL) {
+  if (is.null(year)) year <- lubridate::year(today())
   url <- str_glue("{LAXNUMS_BASE}?y={year}&t={team_id}")
 
   team_name <- url %>%
@@ -248,7 +246,8 @@ getTeamList <- function(sheet_name = "Team Information"){
   return(teams)
 }
 
-buildOutOfStateTeamInfo <- function(missing_ids, year = year(today())){
+buildOutOfStateTeamInfo <- function(missing_ids, year = NULL){
+  if (is.null(year)) year <- lubridate::year(today())
   paste0(LAXNUMS_BASE, "?y=", year, "&t=", missing_ids) %>%
     map_dfr(buildOutOfStateRow)
 }
@@ -280,8 +279,9 @@ buildOutOfStateRow <- function(url){
              check.names = FALSE)
 }
 
-getCompleteGames <- function(sheet_name = "Team Information", year = year(today()),
+getCompleteGames <- function(sheet_name = "Team Information", year = NULL,
                              classification_views = BOYS_CLASSIFICATION_VIEWS){
+  if (is.null(year)) year <- lubridate::year(today())
   classifications <- getUHSAAClassifications(classification_views, year)
 
   utah_team_info <- SHEET_URL %>%

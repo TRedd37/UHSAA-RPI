@@ -4,6 +4,7 @@ library(purrr)
 library(rvest)
 library(lubridate)
 library(stringr)
+library(jsonlite)
 setwd("~/Documents/GitHub/UHSAA-RPI/")
 
 source("functions.R")
