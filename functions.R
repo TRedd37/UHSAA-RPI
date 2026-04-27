@@ -276,20 +276,14 @@ buildOutOfStateRow <- function(url){
              check.names = FALSE)
 }
 
-getCompleteGames <- function(sheet_name = "Team Information", year = NULL,
+getCompleteGames <- function(year = NULL,
                              classification_views = BOYS_CLASSIFICATION_VIEWS){
   if (is.null(year)) year <- lubridate::year(today())
-  classifications <- getUHSAAClassifications(classification_views, year)
 
-  utah_team_info <- SHEET_URL %>%
-    read_sheet(sheet = sheet_name) %>%
-    select(-any_of("Classification")) %>%
-    mutate(`LaxNums ID` = as.character(`LaxNums ID`)) %>%
-    inner_join(classifications %>% select("LaxNums ID", "Classification"),
-               by = "LaxNums ID")
+  utah_team_info <- getUHSAAClassifications(classification_views, year) %>%
+    mutate(UtahNeighbor = TRUE)
 
   utah_opponent_ids <- utah_team_info %>%
-    filter(`LaxNums ID` != "") %>%
     mutate(url = paste0(LAXNUMS_BASE, "?y=", year, "&t=", `LaxNums ID`)) %>%
     pull(url) %>%
     map_dfr(getOpponentIDs) %>%
