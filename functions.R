@@ -68,6 +68,8 @@ calculateIndividualOWP <- function(team_name, opponent, schedule){
 
 calculateOWP <- function(team_name, schedule){
   schedule %>%
+    mutate(Opponent = ifelse(Opponent == "SteamboSprings", 
+                        "Steamboat Springs", Opponent)) %>%
     filter(Team == team_name) %>%
     rename(team_name = Team, opponent = Opponent) %>%
     select(team_name, opponent) %>%
@@ -78,10 +80,12 @@ calculateOWP <- function(team_name, schedule){
 calculateRPI <- function(team_name, schedule, team_info) {
   WP <- team_name %>%
     calculateWP(schedule)
+
   OWP <- calculateOWP(team_name, schedule)
 
   opponents <- schedule %>%
     filter(Team == team_name) %>%
+    distinct() %>%
     pull(Opponent)
   
   opp_WP <- data.frame(team_name = opponents) %>%
@@ -171,7 +175,8 @@ generateRPIForScenario <- function(picks, completed_schedule, teams){
 runScenarioGenerator <- function(completed_schedule, teams, 
                                  sheet_out = "RPI_scenarios"){
   scenarios <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846" %>%
-    read_sheet(sheet = "Taylor's Guess") 
+    read_sheet(sheet = "Taylor's Guess") %>%
+    mutate(Date = as.character(as.Date(Date)))
   
   scenario_first_half <- scenarios %>%
     mutate(Team = Team1,
@@ -272,7 +277,7 @@ getCompleteGames <- function(sheet_name = "Team Information"){
     pull(team_id) %>%
     unique()
   
-  missing_ids <- all_ids %>% setdiff(utah_team_info$`LaxNums ID`)
+  missing_ids <- utah_opponent_ids %>% setdiff(utah_team_info$`LaxNums ID`)
   missing_team_info <- buildOutOfStateTeamInfo(missing_ids)
   
   out_of_state_ids <- missing_team_info %>%

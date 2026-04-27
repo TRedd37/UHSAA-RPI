@@ -4,7 +4,7 @@ library(purrr)
 library(rvest)
 library(lubridate)
 library(stringr)
-setwd("~/Personal/Git/UHSAA-RPI/")
+setwd("~/Documents/GitHub/UHSAA-RPI/")
 
 source("functions.R")
 
