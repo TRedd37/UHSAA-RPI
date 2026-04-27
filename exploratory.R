@@ -68,23 +68,6 @@ getPath <- function(ll){
 output %>%
   map(getPath)
 
-# --- Girls RPI quick print ----------------------------------------------------
-
-RPIs <- data.frame(team_name = girls_teams) %>%
-  pmap_dfr(calculateRPI,
-           schedule = girls_completed_schedule,
-           team_info = girls_team_info) %>%
-  mutate(Team = teams)
-
-RPIs %>%
-  left_join(girls_team_info %>% select("Team Name", "Classification"),
-            by = c("Team" = "Team Name")) %>%
-  arrange(desc(Classification), desc(RPI)) %>%
-  group_by(Classification) %>%
-  mutate(RPI_Rank = row_number()) %>%
-  relocate(RPI_Rank, Team, RPI) %>%
-  print(n = 100)
-
 # --- Write remaining unfinished games to sheet --------------------------------
 
 unfinished_games <- full_schedule %>%

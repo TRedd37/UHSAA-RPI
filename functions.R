@@ -2,9 +2,7 @@ SHEET_URL <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapF
 LAXNUMS_BASE <- "https://www.laxnumbers.com/team_info.php"
 LAXNUMS_RATINGS_BASE <- "https://www.laxnumbers.com/ratings.php"
 
-BOYS_CLASSIFICATION_VIEWS  <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
-# Girls view IDs TBD — update once confirmed on laxnumbers.com
-GIRLS_CLASSIFICATION_VIEWS <- c()
+BOYS_CLASSIFICATION_VIEWS <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
 
 getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
                                     year = year(today())) {
