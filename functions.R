@@ -36,8 +36,12 @@ getTeamSchedule <- function(team_id, year = NULL) {
   if (is.null(year)) year <- lubridate::year(today())
   url <- str_glue("{LAXNUMS_BASE}?y={year}&t={team_id}")
 
-  team_name <- url %>%
-    read_html() %>%
+  page <- tryCatch(
+    read_html(url),
+    error = function(e) { Sys.sleep(3); read_html(url) }
+  )
+
+  team_name <- page %>%
     html_elements("p") %>%
     html_text() %>%
     as.data.frame() %>%
@@ -47,8 +51,7 @@ getTeamSchedule <- function(team_id, year = NULL) {
     mutate(team_name = str_trim(team_name)) %>%
     pull(team_name)
 
-  tables <- url %>%
-    read_html() %>%
+  tables <- page %>%
     html_table()
   schedule <- tables[[2]] %>%
     mutate(Team = team_name,
@@ -234,16 +237,10 @@ runScenarioGenerator <- function(completed_schedule, teams, team_info,
     sheet_write(SHEET_URL, sheet = sheet_out)
 }
 
-getTeamList <- function(sheet_name = "Team Information"){
-  utah_team_info <- SHEET_URL %>%
-    read_sheet(sheet = sheet_name) %>%
-    filter(!is.na(Classification))
-
-  teams <- utah_team_info %>%
-    filter(`LaxNums ID` != "") %>%
+getTeamList <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL){
+  if (is.null(year)) year <- lubridate::year(today())
+  getUHSAAClassifications(view_ids, year) %>%
     pull("Team Name")
-
-  return(teams)
 }
 
 buildOutOfStateTeamInfo <- function(missing_ids, year = NULL){
