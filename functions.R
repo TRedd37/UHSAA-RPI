@@ -287,6 +287,7 @@ getCompleteGames <- function(sheet_name = "Team Information", year = NULL,
   utah_team_info <- SHEET_URL %>%
     read_sheet(sheet = sheet_name) %>%
     select(-any_of("Classification")) %>%
+    mutate(`LaxNums ID` = as.character(`LaxNums ID`)) %>%
     inner_join(classifications %>% select("LaxNums ID", "Classification"),
                by = "LaxNums ID")
 
