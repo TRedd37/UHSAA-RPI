@@ -8,6 +8,8 @@ readHtmlWithRetry <- function(url, attempts = 3, wait = 5) {
   for (i in seq_len(attempts)) {
     result <- tryCatch(read_html(url), error = function(e) e)
     if (!inherits(result, "error")) return(result)
+    msg <- conditionMessage(result)
+    if (grepl("403|404|HTTP error", msg, ignore.case = TRUE)) stop(result)
     if (i < attempts) Sys.sleep(wait)
   }
   stop("Failed to fetch ", url, " after ", attempts, " attempts")
@@ -45,7 +47,11 @@ getTeamSchedule <- function(team_id, year = NULL) {
   if (is.null(year)) year <- lubridate::year(today())
   url <- str_glue("{LAXNUMS_BASE}?y={year}&t={team_id}")
 
-  page <- readHtmlWithRetry(url)
+  page <- tryCatch(
+    readHtmlWithRetry(url),
+    error = function(e) NULL
+  )
+  if (is.null(page)) return(data.frame())
 
   team_name <- page %>%
     html_elements("p") %>%
