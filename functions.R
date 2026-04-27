@@ -87,7 +87,8 @@ calculateWP <- function(team_name, schedule) {
   schedule %>%
     filter(Team == team_name,
            !is.na(OwnScore)) %>%
-    summarize(WP = mean(OwnScore > OpponentScore))
+    summarize(WP = mean(OwnScore > OpponentScore)) %>%
+    pull(WP)
 }
 
 calculateIndividualOWP <- function(team_name, opponent, schedule){
@@ -95,7 +96,8 @@ calculateIndividualOWP <- function(team_name, opponent, schedule){
     filter(Team == opponent,
            Opponent != team_name,
            !is.na(OwnScore)) %>%
-    summarize(WP = mean(OwnScore > OpponentScore))
+    summarize(WP = mean(OwnScore > OpponentScore)) %>%
+    pull(WP)
   data.frame(Opponent = opponent, WP = WP)
 }
 
@@ -107,7 +109,8 @@ calculateOWP <- function(team_name, schedule){
     rename(team_name = Team, opponent = Opponent) %>%
     select(team_name, opponent) %>%
     pmap_dfr(calculateIndividualOWP, schedule = schedule) %>%
-    summarize(OWP = mean(WP))
+    summarize(OWP = mean(WP)) %>%
+    pull(OWP)
 }
 
 calculateRPI <- function(team_name, schedule, team_info) {
@@ -122,20 +125,18 @@ calculateRPI <- function(team_name, schedule, team_info) {
     pull(Opponent)
 
   opp_WP <- data.frame(team_name = opponents) %>%
-    pmap_dfr(calculateOWP, schedule) %>%
-    mutate(Team = opponents) %>%
+    pmap_dbl(calculateOWP, schedule) %>%
+    {data.frame(Team = opponents, OWP = .)} %>%
     left_join(team_info %>% select("Team Name", UtahNeighbor),
               by = c("Team" = "Team Name")) %>%
-    mutate(OWP = ifelse(UtahNeighbor, OWP, 0.5)) %>%
-    select(OWP)
+    mutate(OWP = ifelse(UtahNeighbor, OWP, 0.5))
 
-  OOWP <- data.frame(Opponent = opponents, WP = opp_WP) %>%
-    summarize(OOWP = mean(OWP))
+  OOWP <- mean(opp_WP$OWP)
 
   output <- data.frame(WP = WP,
                        OWP = OWP,
                        OOWP = OOWP,
-                       RPI = as.numeric(0.45 * WP + 0.45 * OWP + 0.1 * OOWP))
+                       RPI = 0.45 * WP + 0.45 * OWP + 0.1 * OOWP)
   return(output)
 }
 
