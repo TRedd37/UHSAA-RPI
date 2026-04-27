@@ -15,7 +15,8 @@ teams <- getTeamList()
 updateRPISheet(completed_schedule, teams, team_info)
 runScenarioGenerator(completed_schedule, teams, team_info)
 
-girls_output_list <- getCompleteGames("Girls")
+# TODO: confirm girls classification view IDs on laxnumbers.com and add to GIRLS_CLASSIFICATION_VIEWS in functions.R
+girls_output_list <- getCompleteGames("Girls", classification_views = GIRLS_CLASSIFICATION_VIEWS)
 girls_completed_schedule <- girls_output_list[["schedule"]]
 girls_team_info <- girls_output_list[["team_info"]]
 girls_teams <- getTeamList("Girls")

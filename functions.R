@@ -1,5 +1,29 @@
 SHEET_URL <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846"
 LAXNUMS_BASE <- "https://www.laxnumbers.com/team_info.php"
+LAXNUMS_RATINGS_BASE <- "https://www.laxnumbers.com/ratings.php"
+
+BOYS_CLASSIFICATION_VIEWS  <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
+# Girls view IDs TBD — update once confirmed on laxnumbers.com
+GIRLS_CLASSIFICATION_VIEWS <- c()
+
+getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
+                                    year = year(today())) {
+  map2_dfr(names(view_ids), unname(view_ids), function(class_name, view_id) {
+    url <- str_glue("{LAXNUMS_RATINGS_BASE}?y={year}&v={view_id}")
+
+    team_links <- url %>%
+      read_html() %>%
+      html_nodes("td.sitestyle1 a")
+
+    data.frame(
+      "Team Name"     = team_links %>% html_text(trim = TRUE),
+      "LaxNums ID"    = team_links %>% html_attr("href") %>% str_replace(".*t=", ""),
+      "Classification" = class_name,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  })
+}
 
 getOpponentIDs <- function(url){
   url %>%
@@ -258,10 +282,15 @@ buildOutOfStateRow <- function(url){
              check.names = FALSE)
 }
 
-getCompleteGames <- function(sheet_name = "Team Information", year = year(today())){
+getCompleteGames <- function(sheet_name = "Team Information", year = year(today()),
+                             classification_views = BOYS_CLASSIFICATION_VIEWS){
+  classifications <- getUHSAAClassifications(classification_views, year)
+
   utah_team_info <- SHEET_URL %>%
     read_sheet(sheet = sheet_name) %>%
-    filter(!is.na(Classification))
+    select(-any_of("Classification")) %>%
+    inner_join(classifications %>% select("LaxNums ID", "Classification"),
+               by = "LaxNums ID")
 
   utah_opponent_ids <- utah_team_info %>%
     filter(`LaxNums ID` != "") %>%
