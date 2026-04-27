@@ -4,6 +4,15 @@ LAXNUMS_RATINGS_BASE <- "https://www.laxnumbers.com/ratings.php"
 
 BOYS_CLASSIFICATION_VIEWS <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
 
+readHtmlWithRetry <- function(url, attempts = 3, wait = 5) {
+  for (i in seq_len(attempts)) {
+    result <- tryCatch(read_html(url), error = function(e) e)
+    if (!inherits(result, "error")) return(result)
+    if (i < attempts) Sys.sleep(wait)
+  }
+  stop("Failed to fetch ", url, " after ", attempts, " attempts")
+}
+
 getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
                                     year = NULL) {
   if (is.null(year)) year <- lubridate::year(today())
@@ -22,7 +31,7 @@ getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
 
 getOpponentIDs <- function(url){
   url %>%
-    read_html() %>%
+    readHtmlWithRetry() %>%
     html_nodes(xpath = "//table//a") %>%
     html_attrs() %>%
     unlist() %>%
@@ -36,10 +45,7 @@ getTeamSchedule <- function(team_id, year = NULL) {
   if (is.null(year)) year <- lubridate::year(today())
   url <- str_glue("{LAXNUMS_BASE}?y={year}&t={team_id}")
 
-  page <- tryCatch(
-    read_html(url),
-    error = function(e) { Sys.sleep(3); read_html(url) }
-  )
+  page <- readHtmlWithRetry(url)
 
   team_name <- page %>%
     html_elements("p") %>%
@@ -250,8 +256,9 @@ buildOutOfStateTeamInfo <- function(missing_ids, year = NULL){
 }
 
 buildOutOfStateRow <- function(url){
-  state <- url %>%
-    read_html() %>%
+  page <- readHtmlWithRetry(url)
+
+  state <- page %>%
     html_nodes(xpath = "//table//a") %>%
     as.character() %>%
     as.data.frame() %>%
@@ -259,8 +266,7 @@ buildOutOfStateRow <- function(url){
     str_replace('.* - ', "") %>%
     str_replace('</a>', "")
 
-  team_name <- url %>%
-    read_html() %>%
+  team_name <- page %>%
     html_elements("p") %>%
     html_text() %>%
     as.data.frame() %>%
