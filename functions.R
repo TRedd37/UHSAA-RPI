@@ -92,25 +92,26 @@ calculateWP <- function(team_name, schedule) {
 }
 
 calculateIndividualOWP <- function(team_name, opponent, schedule){
-  WP <- schedule %>%
-    filter(Team == opponent,
-           Opponent != team_name,
-           !is.na(OwnScore)) %>%
-    summarize(WP = mean(OwnScore > OpponentScore)) %>%
-    pull(WP)
+  games <- schedule %>%
+    filter(Team == opponent, Opponent != team_name, !is.na(OwnScore))
+  WP <- if (nrow(games) == 0) NA_real_ else mean(games$OwnScore > games$OpponentScore)
   data.frame(Opponent = opponent, WP = WP)
 }
 
 calculateOWP <- function(team_name, schedule){
-  schedule %>%
+  opponents_df <- schedule %>%
     mutate(Opponent = ifelse(Opponent == "SteamboSprings",
                         "Steamboat Springs", Opponent)) %>%
     filter(Team == team_name) %>%
     rename(team_name = Team, opponent = Opponent) %>%
-    select(team_name, opponent) %>%
-    pmap_dfr(calculateIndividualOWP, schedule = schedule) %>%
-    summarize(OWP = mean(WP)) %>%
-    pull(OWP)
+    select(team_name, opponent)
+
+  if (nrow(opponents_df) == 0) return(0.5)
+
+  owp_values <- opponents_df %>%
+    pmap_dfr(calculateIndividualOWP, schedule = schedule)
+
+  mean(owp_values$WP, na.rm = TRUE)
 }
 
 calculateRPI <- function(team_name, schedule, team_info) {
