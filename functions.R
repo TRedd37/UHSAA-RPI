@@ -111,7 +111,8 @@ calculateOWP <- function(team_name, schedule){
   owp_values <- opponents_df %>%
     pmap_dfr(calculateIndividualOWP, schedule = schedule)
 
-  mean(owp_values$WP, na.rm = TRUE)
+  result <- mean(owp_values$WP, na.rm = TRUE)
+  if (is.nan(result)) 0.5 else result
 }
 
 calculateRPI <- function(team_name, schedule, team_info) {
@@ -132,7 +133,7 @@ calculateRPI <- function(team_name, schedule, team_info) {
               by = c("Team" = "Team Name")) %>%
     mutate(OWP = ifelse(!is.na(UtahNeighbor) & UtahNeighbor, OWP, 0.5))
 
-  OOWP <- mean(opp_WP$OWP)
+  OOWP <- mean(opp_WP$OWP, na.rm = TRUE)
 
   output <- data.frame(WP = WP,
                        OWP = OWP,
