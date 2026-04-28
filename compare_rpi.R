@@ -1,5 +1,6 @@
-library(rvest); library(dplyr); library(purrr); library(stringr)
+library(rvest); library(dplyr); library(purrr); library(furrr); library(stringr)
 library(lubridate); library(jsonlite); library(googlesheets4)
+plan(multisession)
 source("functions.R")
 
 getUHSAARPI <- function(year = NULL) {

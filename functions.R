@@ -116,6 +116,7 @@ calculateOWP <- function(team_name, schedule){
 }
 
 calculateRPI <- function(team_name, schedule, team_info) {
+
   WP <- team_name %>%
     calculateWP(schedule)
 
@@ -261,7 +262,7 @@ getTeamList <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL){
 buildOutOfStateTeamInfo <- function(missing_ids, year = NULL){
   if (is.null(year)) year <- lubridate::year(today())
   paste0(LAXNUMS_BASE, "?y=", year, "&t=", missing_ids) %>%
-    map_dfr(buildOutOfStateRow)
+    future_map_dfr(buildOutOfStateRow)
 }
 
 buildOutOfStateRow <- function(url){
@@ -301,7 +302,7 @@ getCompleteGames <- function(year = NULL,
   utah_opponent_ids <- utah_team_info %>%
     mutate(url = paste0(LAXNUMS_BASE, "?y=", year, "&t=", `LaxNums ID`)) %>%
     pull(url) %>%
-    map_dfr(getOpponentIDs) %>%
+    future_map_dfr(getOpponentIDs) %>%
     pull(team_id) %>%
     unique()
 
@@ -311,7 +312,7 @@ getCompleteGames <- function(year = NULL,
   out_of_state_ids <- missing_team_info %>%
     filter(UtahNeighbor) %>%
     pull(`Schedule URL`) %>%
-    map_dfr(getOpponentIDs) %>%
+    future_map_dfr(getOpponentIDs) %>%
     pull(team_id) %>%
     unique()
 
@@ -321,7 +322,7 @@ getCompleteGames <- function(year = NULL,
     bind_rows(missing_team_info)
 
   full_schedule <- all_ids %>%
-    map_dfr(getTeamSchedule, year = year)
+    future_map_dfr(getTeamSchedule, year = year)
 
   completed_schedule <- full_schedule %>%
     filter(!is.na(OwnScore))
@@ -330,7 +331,7 @@ getCompleteGames <- function(year = NULL,
 }
 
 updateRPISheet <- function(completed_schedule, teams, team_info, sheet_name = "RPI"){
-  RPIs <- data.frame(team_name = teams) %>%
+    RPIs <- data.frame(team_name = teams) %>%
     pmap_dfr(calculateRPI,
              schedule = completed_schedule,
              team_info = team_info) %>%

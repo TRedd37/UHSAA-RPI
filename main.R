@@ -1,11 +1,14 @@
 library("googlesheets4")
 library(dplyr)
 library(purrr)
+library(furrr)
 library(rvest)
 library(lubridate)
 library(stringr)
 library(jsonlite)
 setwd("~/Documents/GitHub/UHSAA-RPI/")
+
+plan(multisession)
 
 source("functions.R")
 
