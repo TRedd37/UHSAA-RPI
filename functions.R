@@ -130,7 +130,7 @@ calculateRPI <- function(team_name, schedule, team_info) {
     {data.frame(Team = opponents, OWP = .)} %>%
     left_join(team_info %>% select("Team Name", UtahNeighbor),
               by = c("Team" = "Team Name")) %>%
-    mutate(OWP = ifelse(UtahNeighbor, OWP, 0.5))
+    mutate(OWP = ifelse(!is.na(UtahNeighbor) & UtahNeighbor, OWP, 0.5))
 
   OOWP <- mean(opp_WP$OWP)
 
