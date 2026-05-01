@@ -314,6 +314,7 @@ win_prob <- function(rating_diff, scale = 5) {
 simulateSeeds <- function(completed_schedule, teams, team_info,
                           sheet_in   = "Remaining Games",
                           sheet_out  = "Seed Simulation",
+                          n_sims     = 1000,
                           prob_scale = 7) {
   games <- read_sheet(SHEET_URL, sheet = sheet_in) %>%
     mutate(Date = as.character(as.Date(Date)))
@@ -331,8 +332,8 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   certain_games   <- games_rated %>% filter(diff >= 6)
   uncertain_games <- games_rated %>% filter(diff < 6)
   n_uncertain     <- nrow(uncertain_games)
-  n_combos        <- 2L ^ n_uncertain
-  cat(sprintf("%d uncertain games → %d combinations\n", n_uncertain, n_combos))
+  cat(sprintf("%d uncertain games, running %d Monte Carlo simulations\n",
+              n_uncertain, n_sims))
 
   # Win probability for Team1 in each uncertain game
   p1 <- win_prob(
@@ -346,26 +347,17 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   else
     completed_schedule
 
-  combinations <- expand.grid(replicate(n_uncertain, c(1L, 2L), simplify = FALSE))
-
-  # Probability of each combination = product of individual game probs
-  combo_probs <- apply(combinations, 1, function(picks) {
-    prod(ifelse(picks == 1, p1, 1 - p1))
-  })
-
-  all_ranks <- seq_len(nrow(combinations)) %>%
+  all_ranks <- seq_len(n_sims) %>%
     future_map_dfr(function(i) {
-      picks    <- as.integer(combinations[i, ])
+      picks <- ifelse(runif(n_uncertain) < p1, 1L, 2L)
       schedule <- buildScenarioSchedule(uncertain_games, picks, base_schedule)
-      getRanksForSchedule(schedule, teams, team_info) %>%
-        mutate(combo_prob = combo_probs[i])
+      getRanksForSchedule(schedule, teams, team_info)
     })
 
-  # Weighted probability of each seed for each team
   summary_wide <- all_ranks %>%
-    group_by(Classification, Team, Seed) %>%
-    summarise(Prob = sum(combo_prob), .groups = "drop") %>%
-    mutate(Prob = round(Prob * 100, 1)) %>%
+    count(Classification, Team, Seed) %>%
+    mutate(Prob = round(n / n_sims * 100, 1)) %>%
+    select(-n) %>%
     pivot_wider(names_from = Seed, names_prefix = "Seed_",
                 values_from = Prob, values_fill = 0) %>%
     arrange(Classification, desc(Seed_1))
