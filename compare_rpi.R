@@ -60,3 +60,4 @@ if (nrow(unmatched) > 0) {
   cat("\nUHSAA teams not matched in our results:\n")
   print(unmatched %>% select(Classification, UHSAA_Rank, School))
 }
+

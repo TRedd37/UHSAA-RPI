@@ -1,8 +1,29 @@
+library(furrr)
+
 SHEET_URL <- "https://docs.google.com/spreadsheets/d/1Qfa8i306cl47qistk-3D9NEapFn5XLG-8QGn006ySJ4/edit#gid=229011846"
 LAXNUMS_BASE <- "https://www.laxnumbers.com/team_info.php"
 LAXNUMS_RATINGS_BASE <- "https://www.laxnumbers.com/ratings.php"
 
 BOYS_CLASSIFICATION_VIEWS <- c("6A" = 3531, "5A" = 3532, "4A" = 3533)
+
+# Games excluded from RPI (out-of-state opponents that UHSAA doesn't count).
+EXCLUDED_GAMES_2026 <- data.frame(
+  Team     = c("Lehi", "Skyridge", "Skyridge"),
+  Opponent = c("Palo Verde", "San Marcos SD", "St Augustine"),
+  stringsAsFactors = FALSE
+)
+
+# Games missing from LaxNumbers that should count toward RPI.
+# Each matchup needs two rows (both perspectives). Scores only need to reflect W/L.
+MANUAL_GAMES_2026 <- data.frame(
+  Date         = c("2026-01-01", "2026-01-01"),
+  Team         = c("Cedar Valley", "Canyon View"),
+  Opponent     = c("Canyon View",  "Cedar Valley"),
+  Home         = c(TRUE, FALSE),
+  OwnScore     = c(1, 0),
+  OpponentScore= c(0, 1),
+  stringsAsFactors = FALSE
+)
 
 readHtmlWithRetry <- function(url, attempts = 3, wait = 5) {
   for (i in seq_len(attempts)) {
@@ -20,7 +41,13 @@ getUHSAAClassifications <- function(view_ids = BOYS_CLASSIFICATION_VIEWS,
   if (is.null(year)) year <- lubridate::year(today())
   map2_dfr(names(view_ids), unname(view_ids), function(class_name, view_id) {
     url <- str_glue("https://www.laxnumbers.com/ratings/service?y={year}&v={view_id}")
-    teams <- jsonlite::fromJSON(url)
+    teams <- NULL
+    for (i in seq_len(5)) {
+      teams <- tryCatch(jsonlite::fromJSON(url), error = function(e) e)
+      if (!inherits(teams, "error")) break
+      Sys.sleep(10 * i)
+    }
+    if (inherits(teams, "error")) stop("Failed to fetch classifications for ", class_name)
     data.frame(
       "Team Name"      = teams$name,
       "LaxNums ID"     = as.character(teams$team_nbr),
@@ -45,7 +72,7 @@ getOpponentIDs <- function(url){
 
 getTeamSchedule <- function(team_id, year = NULL) {
   if (is.null(year)) year <- lubridate::year(today())
-  url <- str_glue("{LAXNUMS_BASE}?y={year}&t={team_id}")
+  url <- paste0(LAXNUMS_BASE, "?y=", year, "&t=", team_id)
 
   page <- tryCatch(
     readHtmlWithRetry(url),
@@ -79,6 +106,7 @@ getTeamSchedule <- function(team_id, year = NULL) {
            OpponentScore = str_split_fixed(Result, " - ", 2)[,2] %>%
              as.numeric()) %>%
     select(-c(Time, Fix, Result, Location)) %>%
+    mutate(Date = as.character(Date)) %>%
     suppressWarnings()
   return(schedule)
 }
@@ -210,9 +238,10 @@ generateRPIForScenario <- function(picks, completed_schedule, teams, team_info){
 }
 
 runScenarioGenerator <- function(completed_schedule, teams, team_info,
+                                 sheet_in = "Remaining Games",
                                  sheet_out = "RPI_scenarios"){
   scenarios <- SHEET_URL %>%
-    read_sheet(sheet = "Taylor's Guess") %>%
+    read_sheet(sheet = sheet_in) %>%
     mutate(Date = as.character(as.Date(Date)))
 
   scenario_first_half <- scenarios %>%
@@ -251,6 +280,98 @@ runScenarioGenerator <- function(completed_schedule, teams, team_info,
     mutate(RPI_Rank = row_number()) %>%
     relocate(RPI_Rank, Team, RPI) %>%
     sheet_write(SHEET_URL, sheet = sheet_out)
+}
+
+buildScenarioSchedule <- function(games_df, picks, base_schedule) {
+  scenario <- games_df %>% mutate(Pick = picks)
+  first_half <- scenario %>%
+    transmute(Date, Team = Team1, Opponent = Team2, Home = TRUE,
+              OwnScore = as.numeric(Pick == 1), OpponentScore = as.numeric(Pick == 2))
+  second_half <- scenario %>%
+    transmute(Date, Team = Team2, Opponent = Team1, Home = FALSE,
+              OwnScore = as.numeric(Pick == 2), OpponentScore = as.numeric(Pick == 1))
+  base_schedule %>% bind_rows(first_half) %>% bind_rows(second_half)
+}
+
+getRanksForSchedule <- function(schedule, teams, team_info) {
+  data.frame(team_name = teams) %>%
+    pmap_dfr(calculateRPI, schedule = schedule, team_info = team_info) %>%
+    mutate(Team = teams) %>%
+    left_join(team_info %>% select("Team Name", "Classification"),
+              by = c("Team" = "Team Name")) %>%
+    filter(Classification %in% c("5A", "6A")) %>%
+    arrange(desc(Classification), desc(RPI)) %>%
+    group_by(Classification) %>%
+    mutate(Seed = row_number()) %>%
+    ungroup() %>%
+    select(Classification, Team, Seed)
+}
+
+win_prob <- function(rating_diff, scale = 5) {
+  1 / (1 + exp(-rating_diff / scale))
+}
+
+simulateSeeds <- function(completed_schedule, teams, team_info,
+                          sheet_in   = "Remaining Games",
+                          sheet_out  = "Seed Simulation",
+                          prob_scale = 7) {
+  games <- read_sheet(SHEET_URL, sheet = sheet_in) %>%
+    mutate(Date = as.character(as.Date(Date)))
+
+  ratings <- getLaxNumsRatings()
+
+  games_rated <- games %>%
+    left_join(ratings, by = c("Team1" = "Team Name")) %>% rename(Rating1 = Rating) %>%
+    left_join(ratings, by = c("Team2" = "Team Name")) %>% rename(Rating2 = Rating) %>%
+    mutate(
+      diff       = abs(coalesce(Rating1, 0) - coalesce(Rating2, 0)),
+      fixed_pick = ifelse(coalesce(Rating1, 0) >= coalesce(Rating2, 0), 1L, 2L)
+    )
+
+  certain_games   <- games_rated %>% filter(diff >= 6)
+  uncertain_games <- games_rated %>% filter(diff < 6)
+  n_uncertain     <- nrow(uncertain_games)
+  n_combos        <- 2L ^ n_uncertain
+  cat(sprintf("%d uncertain games → %d combinations\n", n_uncertain, n_combos))
+
+  # Win probability for Team1 in each uncertain game
+  p1 <- win_prob(
+    coalesce(uncertain_games$Rating1, 0) - coalesce(uncertain_games$Rating2, 0),
+    scale = prob_scale
+  )
+
+  # Bake in certain outcomes once
+  base_schedule <- if (nrow(certain_games) > 0)
+    buildScenarioSchedule(certain_games, certain_games$fixed_pick, completed_schedule)
+  else
+    completed_schedule
+
+  combinations <- expand.grid(replicate(n_uncertain, c(1L, 2L), simplify = FALSE))
+
+  # Probability of each combination = product of individual game probs
+  combo_probs <- apply(combinations, 1, function(picks) {
+    prod(ifelse(picks == 1, p1, 1 - p1))
+  })
+
+  all_ranks <- seq_len(nrow(combinations)) %>%
+    future_map_dfr(function(i) {
+      picks    <- as.integer(combinations[i, ])
+      schedule <- buildScenarioSchedule(uncertain_games, picks, base_schedule)
+      getRanksForSchedule(schedule, teams, team_info) %>%
+        mutate(combo_prob = combo_probs[i])
+    })
+
+  # Weighted probability of each seed for each team
+  summary_wide <- all_ranks %>%
+    group_by(Classification, Team, Seed) %>%
+    summarise(Prob = sum(combo_prob), .groups = "drop") %>%
+    mutate(Prob = round(Prob * 100, 1)) %>%
+    pivot_wider(names_from = Seed, names_prefix = "Seed_",
+                values_from = Prob, values_fill = 0) %>%
+    arrange(Classification, desc(Seed_1))
+
+  sheet_write(summary_wide, SHEET_URL, sheet = sheet_out)
+  invisible(summary_wide)
 }
 
 getTeamList <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL){
@@ -325,9 +446,77 @@ getCompleteGames <- function(year = NULL,
     future_map_dfr(getTeamSchedule, year = year)
 
   completed_schedule <- full_schedule %>%
-    filter(!is.na(OwnScore))
+    filter(!is.na(OwnScore)) %>%
+    anti_join(EXCLUDED_GAMES_2026, by = c("Team", "Opponent")) %>%
+    anti_join(EXCLUDED_GAMES_2026, by = c("Team" = "Opponent", "Opponent" = "Team")) %>%
+    bind_rows(MANUAL_GAMES_2026)
 
-  list(schedule = completed_schedule, team_info = team_info)
+  list(schedule = completed_schedule, full_schedule = full_schedule, team_info = team_info)
+}
+
+getLaxNumsRatings <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL) {
+  if (is.null(year)) year <- lubridate::year(today())
+  map2_dfr(names(view_ids), unname(view_ids), function(class_name, view_id) {
+    url <- str_glue("https://www.laxnumbers.com/ratings/service?y={year}&v={view_id}")
+    data <- jsonlite::fromJSON(url)
+    data.frame("Team Name" = data$name, Rating = data$rating,
+               check.names = FALSE, stringsAsFactors = FALSE)
+  })
+}
+
+writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Games") {
+  ratings <- getLaxNumsRatings()
+
+  games <- full_schedule %>%
+    filter(is.na(OwnScore), Team %in% teams, Home) %>%
+    transmute(Team1 = Team, Team2 = Opponent, Date = Date) %>%
+    arrange(Date, Team1) %>%
+    left_join(ratings, by = c("Team1" = "Team Name")) %>%
+    rename(Rating1 = Rating) %>%
+    left_join(ratings, by = c("Team2" = "Team Name")) %>%
+    rename(Rating2 = Rating) %>%
+    mutate(
+      diff = abs(Rating1 - Rating2),
+      Pick = case_when(
+        Rating1 >= Rating2 ~ 1L,
+        TRUE               ~ 2L
+      )
+    )
+
+  games %>%
+    select(Team1, Team2, Date, Pick) %>%
+    sheet_write(SHEET_URL, sheet = sheet_name)
+
+  # Apply background colors via a single batchUpdate API call
+  ss        <- gs4_get(SHEET_URL)
+  sheet_id  <- ss$sheets$id[ss$sheets$name == sheet_name]
+
+  mk_color <- function(r, g, b) list(red = r, green = g, blue = b)
+  color_for_diff <- function(d) {
+    if (is.na(d))    mk_color(0.85, 0.85, 0.85)  # gray  – ratings unknown
+    else if (d > 5)  mk_color(0.20, 0.73, 0.39)  # green
+    else if (d >= 2) mk_color(1.00, 0.92, 0.23)  # yellow
+    else             mk_color(0.95, 0.28, 0.28)  # red
+  }
+
+  requests <- lapply(seq_len(nrow(games)), function(i) {
+    list(repeatCell = list(
+      range  = list(sheetId = sheet_id,
+                    startRowIndex = i, endRowIndex = i + 1L,
+                    startColumnIndex = 0L, endColumnIndex = 4L),
+      cell   = list(userEnteredFormat = list(
+                    backgroundColor = color_for_diff(games$diff[i]))),
+      fields = "userEnteredFormat.backgroundColor"
+    ))
+  })
+
+  req <- request_generate(
+    "sheets.spreadsheets.batchUpdate",
+    params = list(spreadsheetId = ss$spreadsheet_id, requests = requests)
+  )
+  request_make(req)
+
+  invisible(NULL)
 }
 
 updateRPISheet <- function(completed_schedule, teams, team_info, sheet_name = "RPI"){
