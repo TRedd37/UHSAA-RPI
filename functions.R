@@ -13,10 +13,22 @@ EXCLUDED_GAMES_2026 <- data.frame(
   stringsAsFactors = FALSE
 )
 
+# Upcoming games not yet on LaxNumbers — added to full_schedule so they appear
+# in writeRemainingGames and simulateSeeds. Both perspectives needed per game.
+MANUAL_REMAINING_GAMES_2026 <- data.frame(
+  Date         = c("2026-05-06", "2026-05-06", "2026-05-06", "2026-05-06"),
+  Team         = c("Waterford", "Jordan", "Highland", "Juan Diego Catholic"),
+  Opponent     = c("Jordan", "Waterford", "Juan Diego Catholic", "Highland"),
+  Home         = c(TRUE, FALSE, TRUE, FALSE),
+  OwnScore     = c(NA_real_, NA_real_, NA_real_, NA_real_),
+  OpponentScore= c(NA_real_, NA_real_, NA_real_, NA_real_),
+  stringsAsFactors = FALSE
+)
+
 # Games missing from LaxNumbers that should count toward RPI.
 # Each matchup needs two rows (both perspectives). Scores only need to reflect W/L.
 MANUAL_GAMES_2026 <- data.frame(
-  Date         = c("2026-01-01", "2026-01-01"),
+  Date         = c("2026-04-25", "2026-04-25"),
   Team         = c("Cedar Valley", "Canyon View"),
   Opponent     = c("Canyon View",  "Cedar Valley"),
   Home         = c(TRUE, FALSE),
@@ -27,7 +39,12 @@ MANUAL_GAMES_2026 <- data.frame(
 
 readHtmlWithRetry <- function(url, attempts = 3, wait = 5) {
   for (i in seq_len(attempts)) {
-    result <- tryCatch(read_html(url), error = function(e) e)
+    result <- tryCatch({
+      resp <- curl::curl_fetch_memory(url)
+      if (resp$status_code %in% c(403L, 404L))
+        stop("HTTP error ", resp$status_code)
+      read_html(rawToChar(resp$content))
+    }, error = function(e) e)
     if (!inherits(result, "error")) return(result)
     msg <- conditionMessage(result)
     if (grepl("403|404|HTTP error", msg, ignore.case = TRUE)) stop(result)
@@ -109,6 +126,46 @@ getTeamSchedule <- function(team_id, year = NULL) {
     mutate(Date = as.character(Date)) %>%
     suppressWarnings()
   return(schedule)
+}
+
+getTeamRatingMath <- function(team_id, year = NULL) {
+  if (is.null(year)) year <- lubridate::year(today())
+  url <- paste0(LAXNUMS_BASE, "?y=", year, "&t=", team_id, "&s=1")
+
+  page <- tryCatch(readHtmlWithRetry(url), error = function(e) NULL)
+  if (is.null(page)) return(data.frame())
+
+  team_name <- page %>%
+    html_elements("p") %>%
+    html_text() %>%
+    as.data.frame() %>%
+    filter(str_detect(., "Season Totals")) %>%
+    mutate(team_name = str_replace(., "\\d\\d\\d\\d Season Totals for the ", ""),
+           team_name = str_replace(team_name, fixed("(Report missing game scores)"), ""),
+           team_name = str_trim(team_name)) %>%
+    pull(team_name)
+  if (length(team_name) == 0) team_name <- NA_character_
+
+  tables <- html_table(page)
+
+  # Find the rating math table by column signature (has "+/-" column)
+  rm_idx <- which(sapply(tables, function(t)
+    "+/-" %in% names(t) || "GD" %in% names(t)))
+  if (length(rm_idx) == 0) return(data.frame())
+
+  tbl <- tables[[rm_idx[1]]]
+  names(tbl)[names(tbl) == "+/-"] <- "PlusMinus"
+
+  tbl %>%
+    mutate(Team       = team_name,
+           team_id    = as.character(team_id),
+           PlusMinus  = suppressWarnings(as.numeric(PlusMinus)),
+           GD         = suppressWarnings(as.numeric(GD)),
+           Opp        = suppressWarnings(as.numeric(Opp)),
+           Date       = as.character(Date),
+           Opponent   = str_trim(Opponent)) %>%
+    filter(!is.na(PlusMinus)) %>%
+    select(Team, team_id, Date, Opponent, `W/L/T`, GD, Opp, PlusMinus)
 }
 
 calculateWP <- function(team_name, schedule) {
@@ -266,19 +323,7 @@ runScenarioGenerator <- function(completed_schedule, teams, team_info,
   scenario_schedule <- completed_schedule %>%
     bind_rows(scenario_games)
 
-  RPIs <- data.frame(team_name = teams) %>%
-    pmap_dfr(calculateRPI,
-             schedule = scenario_schedule,
-             team_info = team_info) %>%
-    mutate(Team = teams)
-
-  RPIs %>%
-    left_join(team_info %>% select("Team Name", "Classification"),
-              by = c("Team" = "Team Name")) %>%
-    arrange(desc(Classification), desc(RPI)) %>%
-    group_by(Classification) %>%
-    mutate(RPI_Rank = row_number()) %>%
-    relocate(RPI_Rank, Team, RPI) %>%
+  getRanksForSchedule(scenario_schedule, teams, team_info) %>%
     sheet_write(SHEET_URL, sheet = sheet_out)
 }
 
@@ -294,32 +339,102 @@ buildScenarioSchedule <- function(games_df, picks, base_schedule) {
 }
 
 getRanksForSchedule <- function(schedule, teams, team_info) {
-  data.frame(team_name = teams) %>%
-    pmap_dfr(calculateRPI, schedule = schedule, team_info = team_info) %>%
-    mutate(Team = teams) %>%
+  completed <- schedule %>%
+    filter(!is.na(OwnScore)) %>%
+    mutate(Opponent = ifelse(Opponent == "SteamboSprings", "Steamboat Springs", Opponent))
+
+  # WP: win rate per team
+  team_totals <- completed %>%
+    group_by(Team) %>%
+    summarise(total_wins  = sum(OwnScore > OpponentScore),
+              total_games = n(), .groups = "drop")
+
+  # Adjusted WP: each team's win rate excluding games against a specific opponent
+  vs_stats <- completed %>%
+    group_by(Team, Opponent) %>%
+    summarise(wins_vs  = sum(OwnScore > OpponentScore),
+              games_vs = n(), .groups = "drop")
+
+  adj_wp <- vs_stats %>%
+    left_join(team_totals, by = "Team") %>%
+    mutate(adj_games = total_games - games_vs,
+           adj_wp    = ifelse(adj_games == 0, NA_real_,
+                              (total_wins - wins_vs) / adj_games)) %>%
+    select(Team, Opponent, adj_wp)
+
+  # OWP: for each (A, B) opponent pair, get B's adj_wp excluding A, then average
+  team_opponents <- completed %>% select(Team, Opponent)
+
+  owp_all <- team_opponents %>%
+    left_join(adj_wp, by = c("Team" = "Opponent", "Opponent" = "Team")) %>%
+    group_by(Team) %>%
+    summarise(OWP = mean(adj_wp, na.rm = TRUE), .groups = "drop") %>%
+    mutate(OWP = ifelse(is.nan(OWP), 0.5, OWP))
+
+  # OOWP: average opponents' OWP, capping non-neighbors at 0.5
+  oowp_all <- team_opponents %>%
+    left_join(owp_all, by = c("Opponent" = "Team")) %>%
+    left_join(team_info %>% select("Team Name", UtahNeighbor),
+              by = c("Opponent" = "Team Name")) %>%
+    mutate(OWP = ifelse(!is.na(UtahNeighbor) & UtahNeighbor, OWP, 0.5),
+           OWP = ifelse(is.na(OWP) | is.nan(OWP), 0.5, OWP)) %>%
+    group_by(Team) %>%
+    summarise(OOWP = mean(OWP, na.rm = TRUE), .groups = "drop")
+
+  data.frame(Team = teams) %>%
+    left_join(team_totals %>% mutate(WP = total_wins / total_games) %>%
+                select(Team, WP), by = "Team") %>%
+    left_join(owp_all,  by = "Team") %>%
+    left_join(oowp_all, by = "Team") %>%
+    mutate(WP   = replace_na(WP,   0),
+           OWP  = replace_na(OWP,  0.5),
+           OOWP = replace_na(OOWP, 0.5),
+           RPI  = 0.45 * WP + 0.45 * OWP + 0.1 * OOWP) %>%
     left_join(team_info %>% select("Team Name", "Classification"),
               by = c("Team" = "Team Name")) %>%
-    filter(Classification %in% c("5A", "6A")) %>%
     arrange(desc(Classification), desc(RPI)) %>%
     group_by(Classification) %>%
     mutate(Seed = row_number()) %>%
     ungroup() %>%
-    select(Classification, Team, Seed)
+    select(Classification, Seed, Team, RPI, WP, OWP, OOWP)
 }
 
 win_prob <- function(rating_diff, scale = 5) {
   1 / (1 + exp(-rating_diff / scale))
 }
 
+plotWinProb <- function(scales = c(1.5, 3, 5, 7), diff_range = c(-15, 15)) {
+  curve_df <- expand.grid(
+      diff  = seq(diff_range[1], diff_range[2], by = 0.1),
+      scale = scales
+    ) %>%
+    mutate(prob  = win_prob(diff, scale = scale),
+           scale = factor(paste0("scale = ", scale),
+                          levels = paste0("scale = ", scales)))
+
+  ggplot2::ggplot(curve_df, ggplot2::aes(diff, prob, color = scale)) +
+    ggplot2::geom_line(linewidth = 1.2) +
+    ggplot2::geom_hline(yintercept = c(0.25, 0.5, 0.75),
+                        lty = 2, color = "gray60") +
+    ggplot2::geom_vline(xintercept = 0, lty = 2, color = "gray60") +
+    ggplot2::scale_y_continuous(labels = scales::percent,
+                                breaks = seq(0, 1, 0.1)) +
+    ggplot2::labs(x = "Rating Difference (Team1 − Team2)",
+                  y = "P(Team1 wins)",
+                  title = "Win Probability by prob_scale",
+                  color = NULL) +
+    ggplot2::theme_minimal()
+}
+
 simulateSeeds <- function(completed_schedule, teams, team_info,
-                          sheet_in   = "Remaining Games",
-                          sheet_out  = "Seed Simulation",
-                          n_sims     = 1000,
-                          prob_scale = 7) {
+                          sheet_in        = "Remaining Games",
+                          sheet_out       = "Seed Simulation",
+                          n_sims          = 1000,
+                          prob_scale      = 7,
+                          certain_cutoff  = 10,
+                          ratings         = getLaxNumsRatings()) {
   games <- read_sheet(SHEET_URL, sheet = sheet_in) %>%
     mutate(Date = as.character(as.Date(Date)))
-
-  ratings <- getLaxNumsRatings()
 
   games_rated <- games %>%
     left_join(ratings, by = c("Team1" = "Team Name")) %>% rename(Rating1 = Rating) %>%
@@ -329,8 +444,8 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
       fixed_pick = ifelse(coalesce(Rating1, 0) >= coalesce(Rating2, 0), 1L, 2L)
     )
 
-  certain_games   <- games_rated %>% filter(diff >= 6)
-  uncertain_games <- games_rated %>% filter(diff < 6)
+  certain_games   <- games_rated %>% filter(diff >= certain_cutoff)
+  uncertain_games <- games_rated %>% filter(diff < certain_cutoff)
   n_uncertain     <- nrow(uncertain_games)
   cat(sprintf("%d uncertain games, running %d Monte Carlo simulations\n",
               n_uncertain, n_sims))
@@ -347,22 +462,93 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   else
     completed_schedule
 
-  all_ranks <- seq_len(n_sims) %>%
-    future_map_dfr(function(i) {
-      picks <- ifelse(runif(n_uncertain) < p1, 1L, 2L)
-      schedule <- buildScenarioSchedule(uncertain_games, picks, base_schedule)
-      getRanksForSchedule(schedule, teams, team_info)
-    })
+  # Only rank 5A/6A teams — no need to calculate 4A each sim
+  teams_sim <- team_info %>%
+    filter(Classification %in% c("5A", "6A")) %>%
+    pull("Team Name") %>%
+    intersect(teams)
+
+  # Run sims in sequential batches (each batch parallelised across workers),
+  # printing a progress bar with elapsed time and ETA after each batch.
+  n_workers   <- max(1L, future::nbrOfWorkers())
+  n_batches   <- 20L
+  batch_sims  <- ceiling(n_sims / n_batches)
+  t_start     <- proc.time()[["elapsed"]]
+
+  all_ranks <- map_dfr(seq_len(n_batches), function(b) {
+    actual <- min(batch_sims, n_sims - (b - 1L) * batch_sims)
+    if (actual <= 0L) return(NULL)
+
+    result <- seq_len(actual) %>%
+      future_map_dfr(function(i) {
+        picks    <- ifelse(runif(n_uncertain) < p1, 1L, 2L)
+        schedule <- buildScenarioSchedule(uncertain_games, picks, base_schedule)
+        getRanksForSchedule(schedule, teams_sim, team_info)
+      }, .options = furrr_options(seed = TRUE))
+
+    elapsed <- proc.time()[["elapsed"]] - t_start
+    pct     <- b / n_batches
+    eta     <- elapsed / pct * (1 - pct)
+    bar     <- paste0(strrep("=", floor(30 * pct)),
+                      strrep(" ", 30L - floor(30 * pct)))
+    cat(sprintf("\r[%s] %3.0f%%  elapsed: %.0fs  ETA: %.0fs   ",
+                bar, 100 * pct, elapsed, eta))
+    flush.console()
+    result
+  })
+  cat("\n")
+
+  expected_seeds <- all_ranks %>%
+    group_by(Classification, Team) %>%
+    summarise(Expected_Seed = mean(Seed), .groups = "drop")
 
   summary_wide <- all_ranks %>%
     count(Classification, Team, Seed) %>%
-    mutate(Prob = round(n / n_sims * 100, 1)) %>%
+    mutate(Prob = round(n / n_sims, 3)) %>%
     select(-n) %>%
     pivot_wider(names_from = Seed, names_prefix = "Seed_",
-                values_from = Prob, values_fill = 0) %>%
-    arrange(Classification, desc(Seed_1))
+                values_from = Prob, values_fill = NA_real_) %>%
+    select(Classification, Team, any_of(paste0("Seed_", 1:24))) %>%
+    left_join(expected_seeds, by = c("Classification", "Team")) %>%
+    arrange(Classification, Expected_Seed) %>%
+    select(-Expected_Seed)
 
   sheet_write(summary_wide, SHEET_URL, sheet = sheet_out)
+
+  # Format: percent display + white-to-green gradient per cell value
+  ss       <- gs4_get(SHEET_URL)
+  sheet_id <- ss$sheets$id[ss$sheets$name == sheet_out]
+
+  seed_cols <- which(startsWith(names(summary_wide), "Seed_"))
+  n_rows    <- nrow(summary_wide)
+
+  requests <- unlist(lapply(seq_len(n_rows), function(i) {
+    lapply(seed_cols, function(j) {
+      v <- summary_wide[[j]][i]
+      if (is.na(v)) v <- 0
+      color <- list(red   = 1 - 0.80 * v,
+                    green = 1 - 0.27 * v,
+                    blue  = 1 - 0.61 * v)
+      list(repeatCell = list(
+        range  = list(sheetId          = sheet_id,
+                      startRowIndex    = i,
+                      endRowIndex      = i + 1L,
+                      startColumnIndex = j - 1L,
+                      endColumnIndex   = j),
+        cell   = list(userEnteredFormat = list(
+                      backgroundColor = color,
+                      numberFormat    = list(type = "PERCENT", pattern = "0.0%"))),
+        fields = "userEnteredFormat.backgroundColor,userEnteredFormat.numberFormat"
+      ))
+    })
+  }), recursive = FALSE)
+
+  req <- request_generate(
+    "sheets.spreadsheets.batchUpdate",
+    params = list(spreadsheetId = ss$spreadsheet_id, requests = requests)
+  )
+  request_make(req)
+
   invisible(summary_wide)
 }
 
@@ -435,7 +621,8 @@ getCompleteGames <- function(year = NULL,
     bind_rows(missing_team_info)
 
   full_schedule <- all_ids %>%
-    future_map_dfr(getTeamSchedule, year = year)
+    future_map_dfr(getTeamSchedule, year = year) %>%
+    bind_rows(MANUAL_REMAINING_GAMES_2026)
 
   completed_schedule <- full_schedule %>%
     filter(!is.na(OwnScore)) %>%
@@ -456,8 +643,8 @@ getLaxNumsRatings <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL)
   })
 }
 
-writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Games") {
-  ratings <- getLaxNumsRatings()
+writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Games",
+                               ratings = getLaxNumsRatings()) {
 
   games <- full_schedule %>%
     filter(is.na(OwnScore), Team %in% teams, Home) %>%
@@ -512,19 +699,7 @@ writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Ga
 }
 
 updateRPISheet <- function(completed_schedule, teams, team_info, sheet_name = "RPI"){
-    RPIs <- data.frame(team_name = teams) %>%
-    pmap_dfr(calculateRPI,
-             schedule = completed_schedule,
-             team_info = team_info) %>%
-    mutate(Team = teams)
-
-  RPIs %>%
-    left_join(team_info %>% select("Team Name", "Classification"),
-              by = c("Team" = "Team Name")) %>%
-    arrange(desc(Classification), desc(RPI)) %>%
-    group_by(Classification) %>%
-    mutate(RPI_Rank = row_number()) %>%
-    relocate(RPI_Rank, Team, RPI) %>%
+  getRanksForSchedule(completed_schedule, teams, team_info) %>%
     sheet_write(SHEET_URL, sheet = sheet_name)
   invisible(NULL)
 }

@@ -1,6 +1,6 @@
 library(rvest); library(dplyr); library(purrr); library(furrr); library(stringr)
 library(lubridate); library(jsonlite); library(googlesheets4)
-plan(multisession)
+plan(multisession, workers = 2)
 source("functions.R")
 
 getUHSAARPI <- function(year = NULL) {
@@ -21,12 +21,54 @@ completed_schedule <- output_list[["schedule"]]
 team_info          <- output_list[["team_info"]]
 teams              <- getTeamList()
 
-our_rpi <- data.frame(team_name = teams) %>%
-  pmap_dfr(calculateRPI, schedule = completed_schedule, team_info = team_info) %>%
-  mutate(Team = teams) %>%
-  left_join(team_info %>% select("Team Name", "Classification"),
-            by = c("Team" = "Team Name")) %>%
+teams_56 <- team_info %>%
   filter(Classification %in% c("5A", "6A")) %>%
+  pull("Team Name") %>%
+  intersect(teams)
+
+completed <- completed_schedule %>%
+  filter(!is.na(OwnScore)) %>%
+  mutate(Opponent = ifelse(Opponent == "SteamboSprings", "Steamboat Springs", Opponent))
+
+team_totals <- completed %>%
+  group_by(Team) %>%
+  summarise(total_wins = sum(OwnScore > OpponentScore), total_games = n(), .groups = "drop")
+
+vs_stats <- completed %>%
+  group_by(Team, Opponent) %>%
+  summarise(wins_vs = sum(OwnScore > OpponentScore), games_vs = n(), .groups = "drop")
+
+adj_wp <- vs_stats %>%
+  left_join(team_totals, by = "Team") %>%
+  mutate(adj_games = total_games - games_vs,
+         adj_wp    = ifelse(adj_games == 0, NA_real_, (total_wins - wins_vs) / adj_games)) %>%
+  select(Team, Opponent, adj_wp)
+
+team_opponents <- completed %>% select(Team, Opponent)
+
+owp_all <- team_opponents %>%
+  left_join(adj_wp, by = c("Team" = "Opponent", "Opponent" = "Team")) %>%
+  group_by(Team) %>%
+  summarise(OWP = mean(adj_wp, na.rm = TRUE), .groups = "drop") %>%
+  mutate(OWP = ifelse(is.nan(OWP), 0.5, OWP))
+
+oowp_all <- team_opponents %>%
+  left_join(owp_all, by = c("Opponent" = "Team")) %>%
+  left_join(team_info %>% select("Team Name", UtahNeighbor), by = c("Opponent" = "Team Name")) %>%
+  mutate(OWP = ifelse(!is.na(UtahNeighbor) & UtahNeighbor, OWP, 0.5),
+         OWP = ifelse(is.na(OWP) | is.nan(OWP), 0.5, OWP)) %>%
+  group_by(Team) %>%
+  summarise(OOWP = mean(OWP, na.rm = TRUE), .groups = "drop")
+
+our_rpi <- data.frame(Team = teams_56) %>%
+  left_join(team_totals %>% mutate(WP = total_wins / total_games) %>% select(Team, WP), by = "Team") %>%
+  left_join(owp_all,  by = "Team") %>%
+  left_join(oowp_all, by = "Team") %>%
+  mutate(WP   = replace_na(WP,   0),
+         OWP  = replace_na(OWP,  0.5),
+         OOWP = replace_na(OOWP, 0.5),
+         RPI  = 0.45 * WP + 0.45 * OWP + 0.1 * OOWP) %>%
+  left_join(team_info %>% select("Team Name", "Classification"), by = c("Team" = "Team Name")) %>%
   arrange(desc(Classification), desc(RPI)) %>%
   group_by(Classification) %>%
   mutate(Our_Rank = row_number()) %>%
