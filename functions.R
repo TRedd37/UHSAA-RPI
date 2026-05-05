@@ -586,17 +586,17 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
     filter(!is.na(Winner), !is.na(Bye_Team)) %>%
     select(sim_id, Classification, Winner, Bye_Team)
 
-  # P(Winner meets Bye_Team in round 2) — symmetric: same value both ways
-  matchup_counts <- round2_matchups %>%
-    count(Classification, Bye_Team, Winner)
-
-  matchup_sym <- matchup_counts %>%
-    rename(Team = Bye_Team, Opponent = Winner) %>%
-    bind_rows(matchup_counts %>% rename(Team = Winner, Opponent = Bye_Team)) %>%
+  # P(Bye_Team meets Winner in round 2)
+  # Rows = top-8-potential teams (bye seeds); columns = all possible round-2 opponents.
+  # No symmetric expansion — a team can't play itself, and mixing perspectives
+  # creates spurious self-matchup cells when a team sometimes seeds 1-8 and
+  # sometimes seeds 9-24.
+  matchup_probs <- round2_matchups %>%
+    filter(Winner != Bye_Team) %>%           # safety: no self-matchups
+    count(Classification, Team = Bye_Team, Opponent = Winner) %>%
     mutate(Prob = round(n / total_sims, 3)) %>%
     select(-n)
 
-  # Rows = teams that appear in seeds 1-8 in at least one sim (bye teams)
   top8_teams <- all_ranks %>%
     filter(Seed <= 8) %>%
     distinct(Classification, Team)
@@ -608,7 +608,7 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
       arrange(Expected_Seed) %>%
       pull(Team)
 
-    wide <- matchup_sym %>%
+    wide <- matchup_probs %>%
       filter(Classification == cls) %>%
       semi_join(top8_teams %>% filter(Classification == cls), by = "Team") %>%
       left_join(expected_seeds %>% filter(Classification == cls),
