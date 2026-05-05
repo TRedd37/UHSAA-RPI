@@ -564,7 +564,7 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   round2_matchups <- seeds24 %>%
     filter(Seed >= 9L, Seed <= 16L) %>%
     mutate(opp_seed = 33L - Seed,
-           bye_seed = Seed - 8L) %>%
+           bye_seed = 17L - Seed) %>%
     left_join(
       seeds24 %>% filter(Seed >= 17L, Seed <= 24L) %>%
         select(sim_id, Classification, Opponent = Team, opp_seed = Seed),
