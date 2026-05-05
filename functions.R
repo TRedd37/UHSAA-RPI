@@ -429,6 +429,7 @@ plotWinProb <- function(scales = c(1.5, 3, 5, 7), diff_range = c(-15, 15)) {
 simulateSeeds <- function(completed_schedule, teams, team_info,
                           sheet_in        = "Remaining Games",
                           sheet_out       = "Seed Simulation",
+                          matchup_sheet   = "First Round Matchups",
                           n_sims          = 1000,
                           prob_scale      = 7,
                           certain_cutoff  = 10,
@@ -479,11 +480,13 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
     actual <- min(batch_sims, n_sims - (b - 1L) * batch_sims)
     if (actual <= 0L) return(NULL)
 
+    batch_offset <- (b - 1L) * batch_sims
     result <- seq_len(actual) %>%
       future_map_dfr(function(i) {
         picks    <- ifelse(runif(n_uncertain) < p1, 1L, 2L)
         schedule <- buildScenarioSchedule(uncertain_games, picks, base_schedule)
-        getRanksForSchedule(schedule, teams_sim, team_info)
+        getRanksForSchedule(schedule, teams_sim, team_info) %>%
+          mutate(sim_id = batch_offset + i)
       }, .options = furrr_options(seed = TRUE))
 
     elapsed <- proc.time()[["elapsed"]] - t_start
@@ -548,6 +551,67 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
     params = list(spreadsheetId = ss$spreadsheet_id, requests = requests)
   )
   request_make(req)
+
+  # ── First-round matchup probabilities ──────────────────────────────────────
+  # In a 16-team bracket: seed s plays seed (17 - s).
+  # Join each team with whoever holds the complementary seed in the same sim.
+  seeds16 <- all_ranks %>%
+    filter(Seed <= 16) %>%
+    select(sim_id, Classification, Team, Seed)
+
+  matchup_counts <- seeds16 %>%
+    mutate(opp_seed = 17L - Seed) %>%
+    left_join(
+      seeds16 %>% rename(Opponent = Team, opp_seed = Seed),
+      by = c("sim_id", "Classification", "opp_seed")
+    ) %>%
+    filter(Seed <= 8L, !is.na(Opponent)) %>%   # keep one side of each matchup
+    count(Classification, Team, Opponent)
+
+  total_sims <- max(all_ranks$sim_id)
+
+  matchup_wide <- matchup_counts %>%
+    mutate(Prob = round(n / total_sims, 3)) %>%
+    select(-n) %>%
+    left_join(expected_seeds, by = c("Classification", "Team")) %>%
+    arrange(Classification, Expected_Seed) %>%
+    select(-Expected_Seed) %>%
+    pivot_wider(names_from = Opponent, values_from = Prob, values_fill = NA_real_)
+
+  sheet_write(matchup_wide, SHEET_URL, sheet = matchup_sheet)
+
+  # Format matchup sheet identically (percent + white-to-green gradient)
+  mu_sheet_id  <- gs4_get(SHEET_URL)$sheets
+  mu_sheet_id  <- mu_sheet_id$id[mu_sheet_id$name == matchup_sheet]
+  mu_cols      <- which(!names(matchup_wide) %in% c("Classification", "Team"))
+  mu_rows      <- nrow(matchup_wide)
+
+  mu_requests <- unlist(lapply(seq_len(mu_rows), function(i) {
+    lapply(mu_cols, function(j) {
+      v <- matchup_wide[[j]][i]
+      if (is.na(v)) v <- 0
+      color <- list(red   = 1 - 0.80 * v,
+                    green = 1 - 0.27 * v,
+                    blue  = 1 - 0.61 * v)
+      list(repeatCell = list(
+        range  = list(sheetId          = mu_sheet_id,
+                      startRowIndex    = i,
+                      endRowIndex      = i + 1L,
+                      startColumnIndex = j - 1L,
+                      endColumnIndex   = j),
+        cell   = list(userEnteredFormat = list(
+                      backgroundColor = color,
+                      numberFormat    = list(type = "PERCENT", pattern = "0.0%"))),
+        fields = "userEnteredFormat.backgroundColor,userEnteredFormat.numberFormat"
+      ))
+    })
+  }), recursive = FALSE)
+
+  req2 <- request_generate(
+    "sheets.spreadsheets.batchUpdate",
+    params = list(spreadsheetId = ss$spreadsheet_id, requests = mu_requests)
+  )
+  request_make(req2)
 
   invisible(summary_wide)
 }
