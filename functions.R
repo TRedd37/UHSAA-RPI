@@ -553,37 +553,55 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   )
   request_make(req)
 
-  # ── First-round matchup probabilities ──────────────────────────────────────
-  # In a 16-team bracket: seed s plays seed (17 - s).
+  # ── Round-1 simulation (seeds 9-24) + round-2 matchup probabilities ─────────
+  # Bracket: seed s (9-16) vs seed (33-s) (17-24); winner faces seed (s-8).
   total_sims <- max(all_ranks$sim_id)
 
-  seeds16 <- all_ranks %>%
-    filter(Seed <= 16) %>%
+  seeds24 <- all_ranks %>%
+    filter(Seed <= 24) %>%
     select(sim_id, Classification, Team, Seed)
 
-  # Dedupe each game pair (alphabetically) so (A,B) and (B,A) merge.
-  unique_matchups <- seeds16 %>%
-    mutate(opp_seed = 17L - Seed) %>%
+  round2_matchups <- seeds24 %>%
+    filter(Seed >= 9L, Seed <= 16L) %>%
+    mutate(opp_seed = 33L - Seed,
+           bye_seed = Seed - 8L) %>%
     left_join(
-      seeds16 %>% rename(Opponent = Team, opp_seed = Seed),
+      seeds24 %>% filter(Seed >= 17L, Seed <= 24L) %>%
+        select(sim_id, Classification, Opponent = Team, opp_seed = Seed),
       by = c("sim_id", "Classification", "opp_seed")
     ) %>%
-    filter(!is.na(Opponent), Team < Opponent) %>%
-    count(Classification, Team, Opponent)
+    left_join(
+      seeds24 %>% filter(Seed <= 8L) %>%
+        select(sim_id, Classification, Bye_Team = Team, bye_seed = Seed),
+      by = c("sim_id", "Classification", "bye_seed")
+    ) %>%
+    left_join(ratings %>% select("Team Name", Rating) %>% rename(R1 = Rating),
+              by = c("Team" = "Team Name")) %>%
+    left_join(ratings %>% select("Team Name", Rating) %>% rename(R2 = Rating),
+              by = c("Opponent" = "Team Name")) %>%
+    mutate(
+      p_win  = win_prob(coalesce(R1, 0) - coalesce(R2, 0), scale = prob_scale),
+      Winner = ifelse(runif(n()) < p_win, Team, Opponent)
+    ) %>%
+    filter(!is.na(Winner), !is.na(Bye_Team)) %>%
+    select(sim_id, Classification, Winner, Bye_Team)
 
-  # Expand symmetrically so each team sees all opponents in their row
-  matchup_sym <- unique_matchups %>%
-    bind_rows(unique_matchups %>% rename(Team = Opponent, Opponent = Team)) %>%
+  # P(Winner meets Bye_Team in round 2) — symmetric: same value both ways
+  matchup_counts <- round2_matchups %>%
+    count(Classification, Bye_Team, Winner)
+
+  matchup_sym <- matchup_counts %>%
+    rename(Team = Bye_Team, Opponent = Winner) %>%
+    bind_rows(matchup_counts %>% rename(Team = Winner, Opponent = Bye_Team)) %>%
     mutate(Prob = round(n / total_sims, 3)) %>%
     select(-n)
 
-  # Rows = teams that appear in seeds 1-8 in at least one sim.
-  # Columns = ALL opponents they could face (no restriction) so rows sum to 1.
+  # Rows = teams that appear in seeds 1-8 in at least one sim (bye teams)
   top8_teams <- all_ranks %>%
     filter(Seed <= 8) %>%
     distinct(Classification, Team)
 
-  # Helper: build + write + format one classification's matchup sheet
+  # Helper: write + format one classification's matchup sheet
   writeMatchupSheet <- function(cls, sheet_name) {
     opp_order <- expected_seeds %>%
       filter(Classification == cls) %>%
@@ -592,8 +610,7 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
 
     wide <- matchup_sym %>%
       filter(Classification == cls) %>%
-      semi_join(top8_teams %>% filter(Classification == cls),
-                by = "Team") %>%
+      semi_join(top8_teams %>% filter(Classification == cls), by = "Team") %>%
       left_join(expected_seeds %>% filter(Classification == cls),
                 by = c("Classification", "Team")) %>%
       arrange(Expected_Seed) %>%
@@ -601,7 +618,7 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
       pivot_wider(names_from  = Opponent,
                   values_from = Prob,
                   values_fill = NA_real_) %>%
-      select(Team, any_of(opp_order))   # columns in seed order
+      select(Team, any_of(opp_order))
 
     sheet_write(wide, SHEET_URL, sheet = sheet_name)
 
