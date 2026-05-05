@@ -427,13 +427,14 @@ plotWinProb <- function(scales = c(1.5, 3, 5, 7), diff_range = c(-15, 15)) {
 }
 
 simulateSeeds <- function(completed_schedule, teams, team_info,
-                          sheet_in        = "Remaining Games",
-                          sheet_out       = "Seed Simulation",
-                          matchup_sheet   = "First Round Matchups",
-                          n_sims          = 1000,
-                          prob_scale      = 7,
-                          certain_cutoff  = 10,
-                          ratings         = getLaxNumsRatings()) {
+                          sheet_in          = "Remaining Games",
+                          sheet_out         = "Seed Simulation",
+                          matchup_sheet_6a  = "Matchups 6A",
+                          matchup_sheet_5a  = "Matchups 5A",
+                          n_sims            = 1000,
+                          prob_scale        = 7,
+                          certain_cutoff    = 10,
+                          ratings           = getLaxNumsRatings()) {
   games <- read_sheet(SHEET_URL, sheet = sheet_in) %>%
     mutate(Date = as.character(as.Date(Date)))
 
@@ -560,77 +561,85 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
     filter(Seed <= 16) %>%
     select(sim_id, Classification, Team, Seed)
 
-  # Dedupe each game pair by keeping alphabetically-first team as "Team".
-  # This ensures (A,B) and (B,A) are counted together regardless of who is
-  # higher seed, giving the true combined matchup probability.
+  # Dedupe each game pair (alphabetically) so (A,B) and (B,A) merge.
   unique_matchups <- seeds16 %>%
     mutate(opp_seed = 17L - Seed) %>%
     left_join(
       seeds16 %>% rename(Opponent = Team, opp_seed = Seed),
       by = c("sim_id", "Classification", "opp_seed")
     ) %>%
-    filter(!is.na(Opponent), Team < Opponent) %>%  # one canonical row per pair
+    filter(!is.na(Opponent), Team < Opponent) %>%
     count(Classification, Team, Opponent)
 
-  # Expand to symmetric: add the reverse direction with the same count
+  # Expand symmetrically so each team sees all opponents in their row
   matchup_sym <- unique_matchups %>%
     bind_rows(unique_matchups %>% rename(Team = Opponent, Opponent = Team)) %>%
     mutate(Prob = round(n / total_sims, 3)) %>%
     select(-n)
 
-  # Rows (and columns) = teams that appear in seeds 1-8 in at least one sim
+  # Rows = teams that appear in seeds 1-8 in at least one sim.
+  # Columns = ALL opponents they could face (no restriction) so rows sum to 1.
   top8_teams <- all_ranks %>%
     filter(Seed <= 8) %>%
     distinct(Classification, Team)
 
-  top8_order <- top8_teams %>%
-    left_join(expected_seeds, by = c("Classification", "Team")) %>%
-    arrange(Classification, Expected_Seed)
+  # Helper: build + write + format one classification's matchup sheet
+  writeMatchupSheet <- function(cls, sheet_name) {
+    opp_order <- expected_seeds %>%
+      filter(Classification == cls) %>%
+      arrange(Expected_Seed) %>%
+      pull(Team)
 
-  matchup_wide <- matchup_sym %>%
-    semi_join(top8_teams, by = c("Classification", "Team")) %>%
-    filter(Opponent %in% top8_teams$Team) %>%
-    left_join(expected_seeds, by = c("Classification", "Team")) %>%
-    arrange(Classification, Expected_Seed) %>%
-    select(-Expected_Seed) %>%
-    pivot_wider(names_from = Opponent, values_from = Prob, values_fill = NA_real_) %>%
-    select(Classification, Team,
-           any_of(top8_order$Team))   # columns in expected-seed order
+    wide <- matchup_sym %>%
+      filter(Classification == cls) %>%
+      semi_join(top8_teams %>% filter(Classification == cls),
+                by = "Team") %>%
+      left_join(expected_seeds %>% filter(Classification == cls),
+                by = c("Classification", "Team")) %>%
+      arrange(Expected_Seed) %>%
+      select(-Expected_Seed, -Classification) %>%
+      pivot_wider(names_from  = Opponent,
+                  values_from = Prob,
+                  values_fill = NA_real_) %>%
+      select(Team, any_of(opp_order))   # columns in seed order
 
-  sheet_write(matchup_wide, SHEET_URL, sheet = matchup_sheet)
+    sheet_write(wide, SHEET_URL, sheet = sheet_name)
 
-  # Format matchup sheet identically (percent + white-to-green gradient)
-  mu_sheet_id  <- gs4_get(SHEET_URL)$sheets
-  mu_sheet_id  <- mu_sheet_id$id[mu_sheet_id$name == matchup_sheet]
-  mu_cols      <- which(!names(matchup_wide) %in% c("Classification", "Team"))
-  mu_rows      <- nrow(matchup_wide)
+    sid      <- gs4_get(SHEET_URL)$sheets
+    sid      <- sid$id[sid$name == sheet_name]
+    val_cols <- which(names(wide) != "Team")
+    n_rows   <- nrow(wide)
 
-  mu_requests <- unlist(lapply(seq_len(mu_rows), function(i) {
-    lapply(mu_cols, function(j) {
-      v <- matchup_wide[[j]][i]
-      if (is.na(v)) v <- 0
-      color <- list(red   = 1 - 0.80 * v,
+    reqs <- unlist(lapply(seq_len(n_rows), function(i) {
+      lapply(val_cols, function(j) {
+        v <- wide[[j]][i]; if (is.na(v)) v <- 0
+        clr <- list(red   = 1 - 0.80 * v,
                     green = 1 - 0.27 * v,
                     blue  = 1 - 0.61 * v)
-      list(repeatCell = list(
-        range  = list(sheetId          = mu_sheet_id,
-                      startRowIndex    = i,
-                      endRowIndex      = i + 1L,
-                      startColumnIndex = j - 1L,
-                      endColumnIndex   = j),
-        cell   = list(userEnteredFormat = list(
-                      backgroundColor = color,
-                      numberFormat    = list(type = "PERCENT", pattern = "0.0%"))),
-        fields = "userEnteredFormat.backgroundColor,userEnteredFormat.numberFormat"
-      ))
-    })
-  }), recursive = FALSE)
+        list(repeatCell = list(
+          range  = list(sheetId          = sid,
+                        startRowIndex    = i,
+                        endRowIndex      = i + 1L,
+                        startColumnIndex = j - 1L,
+                        endColumnIndex   = j),
+          cell   = list(userEnteredFormat = list(
+                        backgroundColor = clr,
+                        numberFormat    = list(type = "PERCENT",
+                                               pattern = "0.0%"))),
+          fields = "userEnteredFormat.backgroundColor,userEnteredFormat.numberFormat"
+        ))
+      })
+    }), recursive = FALSE)
 
-  req2 <- request_generate(
-    "sheets.spreadsheets.batchUpdate",
-    params = list(spreadsheetId = ss$spreadsheet_id, requests = mu_requests)
-  )
-  request_make(req2)
+    request_make(request_generate(
+      "sheets.spreadsheets.batchUpdate",
+      params = list(spreadsheetId = ss$spreadsheet_id, requests = reqs)
+    ))
+    invisible(wide)
+  }
+
+  writeMatchupSheet("6A", matchup_sheet_6a)
+  writeMatchupSheet("5A", matchup_sheet_5a)
 
   invisible(summary_wide)
 }
