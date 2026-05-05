@@ -554,29 +554,48 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
 
   # ── First-round matchup probabilities ──────────────────────────────────────
   # In a 16-team bracket: seed s plays seed (17 - s).
-  # Join each team with whoever holds the complementary seed in the same sim.
+  total_sims <- max(all_ranks$sim_id)
+
   seeds16 <- all_ranks %>%
     filter(Seed <= 16) %>%
     select(sim_id, Classification, Team, Seed)
 
-  matchup_counts <- seeds16 %>%
+  # Dedupe each game pair by keeping alphabetically-first team as "Team".
+  # This ensures (A,B) and (B,A) are counted together regardless of who is
+  # higher seed, giving the true combined matchup probability.
+  unique_matchups <- seeds16 %>%
     mutate(opp_seed = 17L - Seed) %>%
     left_join(
       seeds16 %>% rename(Opponent = Team, opp_seed = Seed),
       by = c("sim_id", "Classification", "opp_seed")
     ) %>%
-    filter(Seed <= 8L, !is.na(Opponent)) %>%   # keep one side of each matchup
+    filter(!is.na(Opponent), Team < Opponent) %>%  # one canonical row per pair
     count(Classification, Team, Opponent)
 
-  total_sims <- max(all_ranks$sim_id)
-
-  matchup_wide <- matchup_counts %>%
+  # Expand to symmetric: add the reverse direction with the same count
+  matchup_sym <- unique_matchups %>%
+    bind_rows(unique_matchups %>% rename(Team = Opponent, Opponent = Team)) %>%
     mutate(Prob = round(n / total_sims, 3)) %>%
-    select(-n) %>%
+    select(-n)
+
+  # Rows (and columns) = teams that appear in seeds 1-8 in at least one sim
+  top8_teams <- all_ranks %>%
+    filter(Seed <= 8) %>%
+    distinct(Classification, Team)
+
+  top8_order <- top8_teams %>%
+    left_join(expected_seeds, by = c("Classification", "Team")) %>%
+    arrange(Classification, Expected_Seed)
+
+  matchup_wide <- matchup_sym %>%
+    semi_join(top8_teams, by = c("Classification", "Team")) %>%
+    filter(Opponent %in% top8_teams$Team) %>%
     left_join(expected_seeds, by = c("Classification", "Team")) %>%
     arrange(Classification, Expected_Seed) %>%
     select(-Expected_Seed) %>%
-    pivot_wider(names_from = Opponent, values_from = Prob, values_fill = NA_real_)
+    pivot_wider(names_from = Opponent, values_from = Prob, values_fill = NA_real_) %>%
+    select(Classification, Team,
+           any_of(top8_order$Team))   # columns in expected-seed order
 
   sheet_write(matchup_wide, SHEET_URL, sheet = matchup_sheet)
 
