@@ -438,6 +438,10 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
   games <- read_sheet(SHEET_URL, sheet = sheet_in) %>%
     mutate(Date = as.character(as.Date(Date)))
 
+  # Handle Lock column — add it if the sheet doesn't have it yet
+  if (!"Lock" %in% names(games)) games$Lock <- FALSE
+  games <- games %>% mutate(Lock = coalesce(as.logical(Lock), FALSE))
+
   games_rated <- games %>%
     left_join(ratings, by = c("Team1" = "Team Name")) %>% rename(Rating1 = Rating) %>%
     left_join(ratings, by = c("Team2" = "Team Name")) %>% rename(Rating2 = Rating) %>%
@@ -446,11 +450,15 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
       fixed_pick = ifelse(coalesce(Rating1, 0) >= coalesce(Rating2, 0), 1L, 2L)
     )
 
-  certain_games   <- games_rated %>% filter(diff >= certain_cutoff)
-  uncertain_games <- games_rated %>% filter(diff < certain_cutoff)
+  # Locked games: use Pick column as the definitive winner (no simulation)
+  locked_games    <- games_rated %>% filter(Lock)
+  remaining_games <- games_rated %>% filter(!Lock)
+
+  certain_games   <- remaining_games %>% filter(diff >= certain_cutoff)
+  uncertain_games <- remaining_games %>% filter(diff < certain_cutoff)
   n_uncertain     <- nrow(uncertain_games)
-  cat(sprintf("%d uncertain games, running %d Monte Carlo simulations\n",
-              n_uncertain, n_sims))
+  cat(sprintf("%d locked, %d certain, %d uncertain games — running %d simulations\n",
+              nrow(locked_games), nrow(certain_games), n_uncertain, n_sims))
 
   # Win probability for Team1 in each uncertain game
   p1 <- win_prob(
@@ -458,11 +466,12 @@ simulateSeeds <- function(completed_schedule, teams, team_info,
     scale = prob_scale
   )
 
-  # Bake in certain outcomes once
-  base_schedule <- if (nrow(certain_games) > 0)
-    buildScenarioSchedule(certain_games, certain_games$fixed_pick, completed_schedule)
-  else
-    completed_schedule
+  # Bake in locked outcomes first, then certain outcomes
+  base_schedule <- completed_schedule
+  if (nrow(locked_games) > 0)
+    base_schedule <- buildScenarioSchedule(locked_games, locked_games$Pick, base_schedule)
+  if (nrow(certain_games) > 0)
+    base_schedule <- buildScenarioSchedule(certain_games, certain_games$fixed_pick, base_schedule)
 
   # Only rank 5A/6A teams — no need to calculate 4A each sim
   teams_sim <- team_info %>%
@@ -755,9 +764,22 @@ getLaxNumsRatings <- function(view_ids = BOYS_CLASSIFICATION_VIEWS, year = NULL)
 writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Games",
                                ratings = getLaxNumsRatings()) {
 
+  # Read existing sheet to preserve any Lock values the user has set
+  existing_locks <- tryCatch({
+    read_sheet(SHEET_URL, sheet = sheet_name) %>%
+      mutate(Date = as.character(as.Date(Date))) %>%
+      select(Team1, Team2, Date, any_of("Lock")) %>%
+      { if (!"Lock" %in% names(.)) mutate(., Lock = FALSE) else . } %>%
+      mutate(Lock = coalesce(as.logical(Lock), FALSE))
+  }, error = function(e) {
+    data.frame(Team1 = character(), Team2 = character(),
+               Date = character(), Lock = logical(),
+               stringsAsFactors = FALSE)
+  })
+
   games <- full_schedule %>%
     filter(is.na(OwnScore), Team %in% teams, Home) %>%
-    transmute(Team1 = Team, Team2 = Opponent, Date = Date) %>%
+    transmute(Team1 = Team, Team2 = Opponent, Date = as.character(Date)) %>%
     arrange(Date, Team1) %>%
     left_join(ratings, by = c("Team1" = "Team Name")) %>%
     rename(Rating1 = Rating) %>%
@@ -769,10 +791,12 @@ writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Ga
         Rating1 >= Rating2 ~ 1L,
         TRUE               ~ 2L
       )
-    )
+    ) %>%
+    left_join(existing_locks, by = c("Team1", "Team2", "Date")) %>%
+    mutate(Lock = coalesce(Lock, FALSE))
 
   games %>%
-    select(Team1, Team2, Date, Pick) %>%
+    select(Team1, Team2, Date, Pick, Lock) %>%
     sheet_write(SHEET_URL, sheet = sheet_name)
 
   # Apply background colors via a single batchUpdate API call
@@ -791,7 +815,7 @@ writeRemainingGames <- function(full_schedule, teams, sheet_name = "Remaining Ga
     list(repeatCell = list(
       range  = list(sheetId = sheet_id,
                     startRowIndex = i, endRowIndex = i + 1L,
-                    startColumnIndex = 0L, endColumnIndex = 4L),
+                    startColumnIndex = 0L, endColumnIndex = 5L),
       cell   = list(userEnteredFormat = list(
                     backgroundColor = color_for_diff(games$diff[i]))),
       fields = "userEnteredFormat.backgroundColor"
