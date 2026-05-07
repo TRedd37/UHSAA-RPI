@@ -28,15 +28,15 @@ EXCLUDED_GAMES_2026 <- data.frame(
 
 # Games missing from LaxNumbers that should count toward RPI.
 # Each matchup needs two rows (both perspectives). Scores only need to reflect W/L.
-MANUAL_GAMES_2026 <- data.frame(
-  Date         = c("2026-04-25", "2026-04-25"),
-  Team         = c("Cedar Valley", "Canyon View"),
-  Opponent     = c("Canyon View",  "Cedar Valley"),
-  Home         = c(TRUE, FALSE),
-  OwnScore     = c(1, 0),
-  OpponentScore= c(0, 1),
-  stringsAsFactors = FALSE
-)
+# MANUAL_GAMES_2026 <- data.frame(
+#   Date         = c("2026-04-25", "2026-04-25"),
+#   Team         = c("Cedar Valley", "Canyon View"),
+#   Opponent     = c("Canyon View",  "Cedar Valley"),
+#   Home         = c(TRUE, FALSE),
+#   OwnScore     = c(1, 0),
+#   OpponentScore= c(0, 1),
+#   stringsAsFactors = FALSE
+# )
 
 readHtmlWithRetry <- function(url, attempts = 3, wait = 5) {
   for (i in seq_len(attempts)) {
@@ -741,17 +741,17 @@ getCompleteGames <- function(year = NULL,
 
   full_schedule <- all_ids %>%
     future_map_dfr(getTeamSchedule, year = year) %>%
-    bind_rows(MANUAL_REMAINING_GAMES_2026) %>%
+    { if (exists("MANUAL_REMAINING_GAMES_2026")) bind_rows(., MANUAL_REMAINING_GAMES_2026) else . } %>%
     # If a manual placeholder and a scraped result exist for the same game,
     # keep the scored row and drop the NA placeholder.
-    arrange(Team, Opponent, Date, !is.na(OwnScore)) %>%
+    arrange(Team, Opponent, Date, is.na(OwnScore)) %>%   # FALSE(scored) sorts before TRUE(NA)
     distinct(Team, Opponent, Date, .keep_all = TRUE)
 
   completed_schedule <- full_schedule %>%
     filter(!is.na(OwnScore)) %>%
     anti_join(EXCLUDED_GAMES_2026, by = c("Team", "Opponent")) %>%
     anti_join(EXCLUDED_GAMES_2026, by = c("Team" = "Opponent", "Opponent" = "Team")) %>%
-    bind_rows(MANUAL_GAMES_2026)
+    { if (exists("MANUAL_GAMES_2026")) bind_rows(., MANUAL_GAMES_2026) else . }
 
   list(schedule = completed_schedule, full_schedule = full_schedule, team_info = team_info)
 }
