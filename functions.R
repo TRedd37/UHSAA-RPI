@@ -16,15 +16,15 @@ EXCLUDED_GAMES_2026 <- data.frame(
 # Upcoming games not yet on LaxNumbers — added to full_schedule so they appear
 # in writeRemainingGames and simulateSeeds. Both perspectives needed per game.
 
-# MANUAL_REMAINING_GAMES_2026 <- data.frame(
-#   Date         = c("2026-05-06", "2026-05-06", "2026-05-06", "2026-05-06"),
-#   Team         = c("Waterford", "Jordan", "Highland", "Juan Diego Catholic"),
-#   Opponent     = c("Jordan", "Waterford", "Juan Diego Catholic", "Highland"),
-#   Home         = c(TRUE, FALSE, TRUE, FALSE),
-#   OwnScore     = c(NA_real_, NA_real_, NA_real_, NA_real_),
-#   OpponentScore= c(NA_real_, NA_real_, NA_real_, NA_real_),
-#   stringsAsFactors = FALSE
-# )
+MANUAL_REMAINING_GAMES_2026 <- data.frame(
+  Date         = c("2026-05-08", "2026-05-08"),
+  Team         = c("Juan Diego Catholic", "Waterford"),
+  Opponent     = c("Waterford", "Juan Diego Catholic"),
+  Home         = c(TRUE, FALSE),
+  OwnScore     = c(NA_real_, NA_real_),
+  OpponentScore= c(NA_real_, NA_real_),
+  stringsAsFactors = FALSE
+)
 
 # Games missing from LaxNumbers that should count toward RPI.
 # Each matchup needs two rows (both perspectives). Scores only need to reflect W/L.
