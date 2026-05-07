@@ -15,15 +15,16 @@ EXCLUDED_GAMES_2026 <- data.frame(
 
 # Upcoming games not yet on LaxNumbers — added to full_schedule so they appear
 # in writeRemainingGames and simulateSeeds. Both perspectives needed per game.
-MANUAL_REMAINING_GAMES_2026 <- data.frame(
-  Date         = c("2026-05-06", "2026-05-06", "2026-05-06", "2026-05-06"),
-  Team         = c("Waterford", "Jordan", "Highland", "Juan Diego Catholic"),
-  Opponent     = c("Jordan", "Waterford", "Juan Diego Catholic", "Highland"),
-  Home         = c(TRUE, FALSE, TRUE, FALSE),
-  OwnScore     = c(NA_real_, NA_real_, NA_real_, NA_real_),
-  OpponentScore= c(NA_real_, NA_real_, NA_real_, NA_real_),
-  stringsAsFactors = FALSE
-)
+
+# MANUAL_REMAINING_GAMES_2026 <- data.frame(
+#   Date         = c("2026-05-06", "2026-05-06", "2026-05-06", "2026-05-06"),
+#   Team         = c("Waterford", "Jordan", "Highland", "Juan Diego Catholic"),
+#   Opponent     = c("Jordan", "Waterford", "Juan Diego Catholic", "Highland"),
+#   Home         = c(TRUE, FALSE, TRUE, FALSE),
+#   OwnScore     = c(NA_real_, NA_real_, NA_real_, NA_real_),
+#   OpponentScore= c(NA_real_, NA_real_, NA_real_, NA_real_),
+#   stringsAsFactors = FALSE
+# )
 
 # Games missing from LaxNumbers that should count toward RPI.
 # Each matchup needs two rows (both perspectives). Scores only need to reflect W/L.
@@ -740,7 +741,11 @@ getCompleteGames <- function(year = NULL,
 
   full_schedule <- all_ids %>%
     future_map_dfr(getTeamSchedule, year = year) %>%
-    bind_rows(MANUAL_REMAINING_GAMES_2026)
+    bind_rows(MANUAL_REMAINING_GAMES_2026) %>%
+    # If a manual placeholder and a scraped result exist for the same game,
+    # keep the scored row and drop the NA placeholder.
+    arrange(Team, Opponent, Date, !is.na(OwnScore)) %>%
+    distinct(Team, Opponent, Date, .keep_all = TRUE)
 
   completed_schedule <- full_schedule %>%
     filter(!is.na(OwnScore)) %>%
